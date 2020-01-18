@@ -1,0 +1,12 @@
+﻿
+GPATH
+GTAGS
+GRTAGS
+
+**/*~
+
+**/*.ilk
+**/*.obj
+**/*.pdb
+**/*.exe
+**/*.exe.manifest
