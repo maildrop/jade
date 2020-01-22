@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <type_traits>
+#include <utility>
 #include <locale>
 
 #include "verify.h"
@@ -12,6 +13,7 @@
 #if defined( _MSC_VER )
 #pragma comment (lib , "Ole32.lib" )
 #pragma comment (lib , "User32.lib")
+#pragma comment (lib , "Gdi32.lib")
 #pragma comment (lib , "Comctl32.lib")
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
@@ -25,6 +27,46 @@ struct entry_argument_t{
   char** argv;
 };
 
+namespace wh{
+  template<typename WindowClassTraits_t>
+  struct WindowClassTemplate{
+  private:
+    template<typename T>
+    static auto has_wndproc_f(T&&) ->
+      decltype( T::wndProc( std::declval<HWND>() , std::declval<UINT>() , std::declval<WPARAM>() , std::declval<LPARAM>() ) , 
+                std::declval<std::true_type>() );
+    static auto has_wndproc_f( ... ) -> decltype( std::declval<std::false_type>() );
+
+#if ( __cplusplus < 201703L )
+    template<bool b>
+    static inline LRESULT wndProc_p( HWND hWnd , UINT uMsg , WPARAM wParam , LPARAM lParam )
+    {
+      return ::DefWindowProc( hWnd , uMsg , wParam, lParam );
+    }
+    
+    template<>
+    static inline LRESULT wndProc_p<true>( HWND hWnd , UINT uMsg , WPARAM wParam , LPARAM lParam )
+    {
+      return WindowClassTraits_t::wndProc( hWnd, uMsg ,wParam , lParam);
+    }
+#endif /* ( __cplusplus < 201703L ) */
+
+  public:
+    static LRESULT wndProc( HWND hWnd , UINT uMsg , WPARAM wParam , LPARAM lParam )
+    {
+#if ( __cplusplus < 201703L )
+      return wndProc_p<std::common_type<decltype( has_wndproc_f(std::declval<Driver>() ) )>::type::value>( hWnd , uMsg , wParam , lParam );
+#else /* ( __cplusplus < 201703L ) */
+      if constexpr (std::common_type<decltype( has_wndproc_f(std::declval<Driver>() ) )>::type::value){
+        return Driver::wndProc( hWnd , uMsg , wParam , lParam );
+      }else{
+        return DefWindowProc( hWnd , uMsg , wParam, lParam );
+      }
+#endif /* ( __cplusplus < 201703L ) */
+    }
+  };
+};
+
 /** initialize CRT debug flags*/
 static inline void crt_debug_setup(void);
 /** initialize windows common controls. */
@@ -33,6 +75,42 @@ static int common_control_initialize();
 /** application entry point */
 static inline unsigned int
 entry_point( HINSTANCE hInstance , int argc , char** argv );
+static inline LRESULT
+service_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam ,LPARAM lParam );
+
+enum{
+  WM_APP_BEGIN = WM_APP,
+  WM_APP_NULL,
+  WM_APP_QUIT,
+  WM_APP_STARTUP,
+  WM_APP_SHUTDOWN,
+  WM_APP_END
+};
+
+static inline LRESULT
+service_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam ,LPARAM lParam )
+{
+  switch( uMsg ){
+  case WM_NCCREATE:
+    return ::DefWindowProc( hWnd, uMsg , wParam , lParam );
+  case WM_DESTROY:
+    PostQuitMessage(0);
+    return DefWindowProc( hWnd , uMsg, wParam , lParam );
+  case WM_APP_QUIT:
+    VERIFY( DestroyWindow( hWnd ) );
+    return 1;
+  case WM_APP_SHUTDOWN:
+    VERIFY( PostMessage( hWnd , WM_APP_QUIT , 0 , 0 ) );
+    return 1;
+  case WM_APP_STARTUP:
+    // common-controls manifest+ check 
+    MessageBoxEx(NULL, TEXT("Hello world"),TEXT("エラー"), MB_OK,MAKELANGID( LANG_NEUTRAL,SUBLANG_DEFAULT ));
+    PostMessage( hWnd , WM_APP_SHUTDOWN , 0 ,0  );
+    return 1;
+  default:
+    return ::DefWindowProc( hWnd, uMsg , wParam , lParam );
+  }
+}
 
 static inline unsigned int
 entry_point( HINSTANCE hInstance , int argc , char** argv )
@@ -41,9 +119,46 @@ entry_point( HINSTANCE hInstance , int argc , char** argv )
   (void)(argc);
   (void)(argv);
 
-  MessageBox(NULL, TEXT("hello world"),
-             TEXT("Hello World"), MB_OK );
-  
+  const WNDCLASSEX wndClassEx = {
+    sizeof( WNDCLASSEX ),
+    0,service_window_proc ,0,0, GetModuleHandle(NULL),
+    (HICON)LoadImage(NULL, IDI_APPLICATION, IMAGE_ICON, 0, 0, LR_SHARED),
+    (HCURSOR)LoadImage(NULL, IDC_ARROW, IMAGE_CURSOR, 0, 0, LR_SHARED),
+    (HBRUSH)GetStockObject(WHITE_BRUSH),
+    nullptr ,
+    TEXT("wh-window-class-05e3a2f6-3161-457a-b87a-1ac711b8dd15"),
+    (HICON)LoadImage(NULL, IDI_APPLICATION, IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR) };
+  auto regClass = RegisterClassEx( &wndClassEx );
+  VERIFY( regClass );
+  if( regClass ){
+    HWND const hWnd = CreateWindowEx(0L, 
+                                     (PCTSTR)regClass ,
+                                     TEXT("wh-service-window"),
+                                     0L,
+                                     CW_USEDEFAULT , 0,
+                                     CW_USEDEFAULT , 0,
+                                     HWND_MESSAGE ,
+                                   0, 
+                                     GetModuleHandle( NULL ),
+                                     0 );
+    if( hWnd ){
+      PostMessage( hWnd , WM_APP_STARTUP , 0 ,0  );
+      {
+        MSG msg = {0};
+        BOOL bRet;
+        while( (bRet = GetMessage( &msg, hWnd, 0, 0 )) != 0){ 
+          if (bRet == -1){
+            // handle the error and possibly exit
+            break;
+          }else{
+            //TranslateMessage(&msg); 
+            DispatchMessage(&msg); 
+          }
+        }
+      }
+    }
+    VERIFY( UnregisterClass( (LPCTSTR)( regClass ), GetModuleHandle(NULL) ));
+  }
   return EXIT_SUCCESS;
 }
 
