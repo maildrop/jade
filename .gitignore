@@ -13,3 +13,4 @@ GRTAGS
 
 vcpkg-export-20200207-182453/
 vcpkg-export-20200207-182453.7z
+**/*.sqlite3
