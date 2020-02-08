@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <utility>
 #include <locale>
+#include <thread>
 
 #include "verify.h"
 
@@ -77,9 +78,11 @@ static inline unsigned int
 entry_point( HINSTANCE hInstance , int argc , char** argv );
 static inline LRESULT
 service_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam ,LPARAM lParam );
+static
+HWND& getServiceHWND();
 
 enum{
-  WM_APP_BEGIN = WM_APP,
+  WM_APP_BEGIN = (WM_APP+1),
   WM_APP_NULL,
   WM_APP_QUIT,
   WM_APP_STARTUP,
@@ -87,9 +90,55 @@ enum{
   WM_APP_END
 };
 
+static
+HWND& getServiceHWND()
+{
+  static HWND hWnd = 0;
+  return hWnd;
+}
+
+
+
+static inline LRESULT
+ui_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam , LPARAM lParam )
+{
+  switch( uMsg ){
+  case WM_PAINT:
+    {
+#if 0
+      PAINTSTRUCT paintStruct = {0};
+      HDC hDC = BeginPaint( hWnd , &paintStruct );
+      VERIFY( hDC );
+      if( hDC ){
+
+        
+      }
+      VERIFY( EndPaint( hWnd , &paintStruct ) );
+#else
+      VERIFY( ValidateRect( hWnd , NULL ) );
+#endif
+    }
+    return ::DefWindowProc( hWnd , uMsg , wParam , lParam );
+  case WM_SETCURSOR:
+    if(LOWORD(lParam) == HTCLIENT){
+      (void)(SetCursor((HCURSOR)GetClassLongPtr( hWnd , GCLP_HCURSOR )));
+      return 1;
+    }
+    return ::DefWindowProc( hWnd, uMsg , wParam , lParam );
+  case WM_DESTROY:
+    PostQuitMessage( 0 );
+    return ::DefWindowProc( hWnd , uMsg , wParam , lParam );
+  default:
+    return ::DefWindowProc( hWnd , uMsg , wParam , lParam );
+  }
+}
+
+
 static inline LRESULT
 service_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam ,LPARAM lParam )
 {
+  static std::thread uithread{};
+  
   switch( uMsg ){
   case WM_NCCREATE:
     return ::DefWindowProc( hWnd, uMsg , wParam , lParam );
@@ -100,17 +149,53 @@ service_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam ,LPARAM lParam )
     VERIFY( DestroyWindow( hWnd ) );
     return 1;
   case WM_APP_SHUTDOWN:
+    uithread.join();
     VERIFY( PostMessage( hWnd , WM_APP_QUIT , 0 , 0 ) );
     return 1;
   case WM_APP_STARTUP:
     // common-controls manifest+ check 
-    MessageBoxEx(NULL, TEXT("Hello world"),TEXT("エラー"), MB_OK,MAKELANGID( LANG_NEUTRAL,SUBLANG_DEFAULT ));
-    PostMessage( hWnd , WM_APP_SHUTDOWN , 0 ,0  );
+    // MessageBoxEx(NULL, TEXT("Hello world"),TEXT("エラー"), MB_OK,MAKELANGID( LANG_NEUTRAL,SUBLANG_DEFAULT ));
+    uithread = std::thread{ [](){
+      HRESULT const hr = CoInitializeEx( nullptr ,  COINIT_APARTMENTTHREADED );
+      VERIFY( S_OK == hr );
+      if( SUCCEEDED( hr ) ){
+        HWND hWnd = CreateWindowEx( 0L,
+                                    TEXT("wh-window-class-2b525389-5b3e-4f3e-ab44-c2a3ffe343bc"),
+                                    TEXT("jade"),
+                                    WS_OVERLAPPEDWINDOW ,
+                                    CW_USEDEFAULT , CW_USEDEFAULT ,
+                                    1024 , 800 ,
+                                    NULL,NULL, GetModuleHandle( NULL ) , nullptr );
+        
+        VERIFY( hWnd );
+        if( hWnd ){
+          
+          (void)ShowWindow( hWnd , SW_SHOW );
+          VERIFY( InvalidateRect( hWnd , nullptr , TRUE ) );
+
+          MSG msg = {0};
+          BOOL bRet;
+          while( 0 != (bRet = GetMessage( &msg, NULL , 0, 0 )) ){ 
+            if (bRet == -1){
+              // handle the error and possibly exit
+              assert( !"GetMessage() failed");
+              break;
+            }else{
+              TranslateMessage(&msg); 
+              DispatchMessage(&msg); 
+            }
+          }
+        }
+      }
+      PostMessage( getServiceHWND() , WM_APP_SHUTDOWN , 0 ,0 );
+      return 0;
+    }};
     return 1;
   default:
     return ::DefWindowProc( hWnd, uMsg , wParam , lParam );
   }
 }
+
 
 static inline unsigned int
 entry_point( HINSTANCE hInstance , int argc , char** argv )
@@ -119,6 +204,34 @@ entry_point( HINSTANCE hInstance , int argc , char** argv )
   (void)(argc);
   (void)(argv);
 
+  struct RegisterdClass{
+    ATOM atom;
+    RegisterdClass(ATOM&& atom) : atom(std::move(atom))
+    {
+    }
+    RegisterdClass(const RegisterdClass& ) = delete;
+    RegisterdClass& operator=( const RegisterdClass& ) = delete;
+    
+    ~RegisterdClass()
+    {
+      VERIFY( UnregisterClass( (LPCTSTR)( atom ), GetModuleHandle(NULL) ));
+    }
+
+    operator LPCTSTR() const
+    {
+      return (LPCTSTR)(atom);
+    }
+    
+    operator bool() const
+    {
+      return (atom ? true : false );
+    }
+    operator ATOM() const
+    {
+      return atom;
+    }
+  };
+  
   const WNDCLASSEX wndClassEx = {
     sizeof( WNDCLASSEX ),
     0,service_window_proc ,0,0, GetModuleHandle(NULL),
@@ -128,25 +241,39 @@ entry_point( HINSTANCE hInstance , int argc , char** argv )
     nullptr ,
     TEXT("wh-window-class-05e3a2f6-3161-457a-b87a-1ac711b8dd15"),
     (HICON)LoadImage(NULL, IDI_APPLICATION, IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR) };
-  auto regClass = RegisterClassEx( &wndClassEx );
-  VERIFY( regClass );
+  RegisterdClass regClass{ RegisterClassEx( &wndClassEx ) };
+  VERIFY( static_cast<bool>(regClass) );
+
+  const WNDCLASSEX uiWndClsEx = {
+    sizeof( WNDCLASSEX ),
+    0,ui_window_proc ,0,0, GetModuleHandle(NULL),
+    (HICON)LoadImage(NULL, IDI_APPLICATION, IMAGE_ICON, 0, 0, LR_SHARED),
+    (HCURSOR)LoadImage(NULL, IDC_ARROW, IMAGE_CURSOR, 0, 0, LR_SHARED),
+    (HBRUSH)GetStockObject(DKGRAY_BRUSH),
+    nullptr ,
+    TEXT("wh-window-class-2b525389-5b3e-4f3e-ab44-c2a3ffe343bc"),
+    (HICON)LoadImage(NULL, IDI_APPLICATION, IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR) };
+  RegisterdClass uiWndClass{ RegisterClassEx( &uiWndClsEx ) };
+  VERIFY( static_cast<bool>( uiWndClass ));
+
   if( regClass ){
-    HWND const hWnd = CreateWindowEx(0L, 
-                                     (PCTSTR)regClass ,
-                                     TEXT("wh-service-window"),
-                                     0L,
-                                     CW_USEDEFAULT , 0,
-                                     CW_USEDEFAULT , 0,
-                                     HWND_MESSAGE ,
-                                   0, 
-                                     GetModuleHandle( NULL ),
-                                     0 );
+    HWND const hWnd =
+      (getServiceHWND() = CreateWindowEx(0L, 
+                                         (LPCTSTR)regClass ,
+                                         TEXT("wh-service-window"),
+                                         0L,
+                                         CW_USEDEFAULT , 0,
+                                         CW_USEDEFAULT , 0,
+                                         HWND_MESSAGE ,
+                                         0, 
+                                         GetModuleHandle( NULL ),
+                                         0 ) );
     if( hWnd ){
       PostMessage( hWnd , WM_APP_STARTUP , 0 ,0  );
       {
         MSG msg = {0};
         BOOL bRet;
-        while( (bRet = GetMessage( &msg, hWnd, 0, 0 )) != 0){ 
+        while( (bRet = GetMessage( &msg, NULL, 0, 0 )) != 0){ 
           if (bRet == -1){
             // handle the error and possibly exit
             break;
@@ -157,7 +284,6 @@ entry_point( HINSTANCE hInstance , int argc , char** argv )
         }
       }
     }
-    VERIFY( UnregisterClass( (LPCTSTR)( regClass ), GetModuleHandle(NULL) ));
   }
   return EXIT_SUCCESS;
 }
