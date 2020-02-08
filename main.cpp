@@ -9,6 +9,7 @@
 #include <locale>
 #include <thread>
 
+#include "sqlite3.h"
 #include "verify.h"
 
 #if defined( _MSC_VER )
@@ -21,6 +22,42 @@
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #endif /* defined( _MSC_VER ) */
+
+#ifdef _WIN32
+#include <Windows.h>
+template<UINT SrcCodePage, UINT DstCodePage>
+std::string ConvertStringCodePage(const std::string& src)
+{
+  
+  int const lenghtUnicode = MultiByteToWideChar(SrcCodePage, 0, src.c_str(), int(std::size( src )), NULL, 0);
+  if( ! lenghtUnicode ){
+    throw(std::out_of_range("ERROR_NO_UNICODE_TRANSLATION"));
+  }
+  std::wstring bufUnicode(lenghtUnicode, L'\0');
+  int const lenghtUnicodeActual = MultiByteToWideChar(SrcCodePage, 0, src.c_str(), int(std::size(src)), &bufUnicode[0], int(std::size(bufUnicode)) );
+  assert( 0 != lenghtUnicodeActual );
+  assert(lenghtUnicode == lenghtUnicodeActual);
+
+  int const lengthDst = WideCharToMultiByte(DstCodePage, 0, &bufUnicode[0], int(std::size(bufUnicode)), NULL, 0, NULL, NULL);
+  if ( ! lengthDst){
+    throw(std::out_of_range("ERROR_NO_UNICODE_TRANSLATION"));
+  }
+  std::string dst(lengthDst, '\0');
+  int const lengthDstActual = WideCharToMultiByte(DstCodePage, 0, &bufUnicode[0], int(std::size(bufUnicode)), &dst[0], int(std::size(dst)), NULL, NULL);
+  assert( 0 != lengthDstActual );
+  assert(lengthDst == lengthDstActual);
+  return dst;
+}
+
+inline std::string ToUTF8(const std::string& src) { return ConvertStringCodePage<CP_ACP, CP_UTF8>(src); }
+inline std::string FromUTF8(const std::string& src) { return ConvertStringCodePage<CP_UTF8, CP_ACP>(src); }
+#else /* defined( _WIN32 ) */
+
+inline std::string ToUTF8(const std::string& src) { return src; }
+inline std::string FromUTF8(const std::string& src) { return src; }
+
+#endif /* defined( _WIN32 ) */
+
 
 struct entry_argument_t{
   HINSTANCE hInstance;
@@ -159,6 +196,21 @@ service_window_proc( HWND hWnd , UINT uMsg , WPARAM wParam ,LPARAM lParam )
       HRESULT const hr = CoInitializeEx( nullptr ,  COINIT_APARTMENTTHREADED );
       VERIFY( S_OK == hr );
       if( SUCCEEDED( hr ) ){
+
+        struct sqlite3_deletor{
+          inline void operator()( sqlite3* ptr ) const {
+            if( SQLITE_OK != sqlite3_close( ptr ) ){
+              assert( !"sqlite3_close() failed" );
+            }
+          };
+        };
+        
+        std::unique_ptr< sqlite3 , sqlite3_deletor > db{ [](const std::string& path){
+          sqlite3 *ptr = nullptr;
+          return SQLITE_OK == sqlite3_open( ToUTF8(path).c_str() , &ptr ) ? ptr : nullptr ;
+        }("db.sqlite3")};
+        
+        
         HWND hWnd = CreateWindowEx( 0L,
                                     TEXT("wh-window-class-2b525389-5b3e-4f3e-ab44-c2a3ffe343bc"),
                                     TEXT("jade"),
