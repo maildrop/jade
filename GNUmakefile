@@ -13,9 +13,12 @@ jade_LIBS:=User32.lib Ole32.lib Gdi32.lib Comctl32.lib \
 all_TARGET=jade.exe
 clean_TARGET=$(all_TARGET) $(all_TARGET:.exe=.exe.manifest) $(all_TARGET:.exe=.pdb) $(all_TARGET:.exe=.ilk) $(jade_OBJS) GTAGS GPATH GRTAGS vc140.pdb
 
-.PHONY=all clean
+.PHONY=all clean spawn test
 
 all: $(all_TARGET)
+
+test:
+	PATH=.:vcpkg-export-20200207-182453\installed\x64-windows\debug\bin jade.exe
 
 clean:
 	@for i in $(clean_TARGET) ; do if [ -f "$$i" ]; then rm $$i ; fi ; done
