@@ -16,7 +16,7 @@ clean_TARGET=$(all_TARGET) $(all_TARGET:.exe=.exe.manifest) $(all_TARGET:.exe=.p
 .PHONY=all clean
 
 all: $(all_TARGET)
-	gtags
+
 clean:
 	@for i in $(clean_TARGET) ; do if [ -f "$$i" ]; then rm $$i ; fi ; done
 	@find . -type f -name '*~' -delete
